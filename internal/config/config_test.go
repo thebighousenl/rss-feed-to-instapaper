@@ -229,3 +229,41 @@ func TestLoad_max_initial_items_explicit(t *testing.T) {
 		t.Errorf("MaxInitialItems: got %d, want 10", cfg.MaxInitialItems)
 	}
 }
+
+func TestFeedFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	yml := "feeds:\n  - url: http://x\n    include: [\"go\", \"^rust\"]\n    exclude: [\"nft\"]\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := cfg.Feeds[0]
+	for title, want := range map[string]bool{
+		"Learning Go":      true,
+		"Rust news":        true,
+		"Python tips":      false,
+		"Go and NFTs":      false,
+		"GO is great":      true,
+		"Why rust is fast": false,
+	} {
+		if got := f.Matches(title); got != want {
+			t.Errorf("Matches(%q) = %v, want %v", title, got, want)
+		}
+	}
+	if !(config.Feed{}).Matches("anything") {
+		t.Error("feed without filters should match everything")
+	}
+}
+
+func TestFeedFilterInvalidRegex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte("feeds:\n  - url: http://x\n    include: [\"(\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("expected error for invalid regex")
+	}
+}

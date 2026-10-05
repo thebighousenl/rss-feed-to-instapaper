@@ -10,3 +10,5 @@ feeds:
   - url: "https://another-blog.com/rss"
     label: "Another Blog"
     # enabled: false  # uncomment to temporarily pause this feed
+    # include: ["Go", "Rust"]  # only add articles whose title matches one of these (case-insensitive regex)
+    # exclude: ["NFT", "crypto"]  # skip articles whose title matches any of these

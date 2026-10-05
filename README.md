@@ -172,6 +172,8 @@ All feed and sync behavior is configured in `config.yaml`.
 | `feeds[].url` | string | *(required)* | URL of the RSS or Atom feed |
 | `feeds[].label` | string | *(optional)* | Label to apply to articles added from this feed in Instapaper |
 | `feeds[].enabled` | boolean | `true` | Set to `false` to temporarily pause a feed without removing it from the config |
+| `feeds[].include` | list of strings | none | Only add articles whose title matches at least one pattern (case-insensitive regex; plain keywords work) |
+| `feeds[].exclude` | list of strings | none | Skip articles whose title matches any pattern; takes precedence over `include` |
 
 ### Example
 
