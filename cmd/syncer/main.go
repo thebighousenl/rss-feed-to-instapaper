@@ -32,6 +32,31 @@ func sortPending(items []pendingItem) {
 	})
 }
 
+// selectNew returns the items to add for a feed. Title filters are applied
+// first, so filtered-out items are neither dedup-checked nor counted toward
+// the initial-sync cap.
+func selectNew(f config.Feed, items []feed.Item, isNew bool, maxInitial int, isSent func(string) (bool, error)) []feed.Item {
+	var out []feed.Item
+	for _, item := range items {
+		if !f.Matches(item.Title) {
+			continue
+		}
+		sent, err := isSent(item.GUID)
+		if err != nil {
+			log.Printf("ERROR check state for %s: %v", item.GUID, err)
+			continue
+		}
+		if sent {
+			continue
+		}
+		out = append(out, item)
+	}
+	if maxInitial > 0 && isNew && len(out) > maxInitial {
+		out = out[:maxInitial]
+	}
+	return out
+}
+
 func main() {
 	configPath := envOr("CONFIG_PATH", "/config/config.yaml")
 	statePath := envOr("STATE_PATH", "/data/state.db")
@@ -72,21 +97,7 @@ func main() {
 		if err != nil {
 			log.Printf("ERROR register feed %s: %v", f.URL, err)
 		}
-		var feedNew []feed.Item
-		for _, item := range items {
-			sent, err := db.IsSent(item.GUID)
-			if err != nil {
-				log.Printf("ERROR check state for %s: %v", item.GUID, err)
-				continue
-			}
-			if sent {
-				continue
-			}
-			feedNew = append(feedNew, item)
-		}
-		if cfg.MaxInitialItems > 0 && isNew && len(feedNew) > cfg.MaxInitialItems {
-			feedNew = feedNew[:cfg.MaxInitialItems]
-		}
+		feedNew := selectNew(f, items, isNew, cfg.MaxInitialItems, db.IsSent)
 		for _, item := range feedNew {
 			pending = append(pending, pendingItem{item: item, feedLabel: f.Label})
 		}
