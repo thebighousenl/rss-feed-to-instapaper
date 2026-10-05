@@ -216,8 +216,8 @@ func TestClient_ListArchived_returns_bookmark_ids(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"user":      map[string]interface{}{"type": "user"},
-			"bookmarks": []map[string]interface{}{{"bookmark_id": 101}, {"bookmark_id": 202}},
+			"user":       map[string]interface{}{"type": "user"},
+			"bookmarks":  []map[string]interface{}{{"bookmark_id": 101}, {"bookmark_id": 202}},
 			"highlights": []interface{}{},
 		})
 	}))
