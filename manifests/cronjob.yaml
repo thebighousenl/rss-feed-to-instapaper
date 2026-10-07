@@ -15,7 +15,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: syncer
-              image: ghcr.io/daniel-luke/rss-feed-to-instapaper:latest
+              image: ghcr.io/thebighousenl/rss-feed-to-instapaper:latest
               imagePullPolicy: Always
               envFrom:
                 - secretRef:
