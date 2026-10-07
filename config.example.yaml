@@ -12,3 +12,5 @@ feeds:
     # enabled: false  # uncomment to temporarily pause this feed
     # include: ["Go", "Rust"]  # only add articles whose title matches one of these (case-insensitive regex)
     # exclude: ["NFT", "crypto"]  # skip articles whose title matches any of these
+    # max_age_days: 14  # override the global max_age_days for this feed (>= 1)
+    # archive_retention_days: 0  # override archive_retention_days for this feed (0 = never delete); ignored if clear_archive_on_sync is true

@@ -172,8 +172,16 @@ All feed and sync behavior is configured in `config.yaml`.
 | `feeds[].url` | string | *(required)* | URL of the RSS or Atom feed |
 | `feeds[].label` | string | *(optional)* | Label to apply to articles added from this feed in Instapaper |
 | `feeds[].enabled` | boolean | `true` | Set to `false` to temporarily pause a feed without removing it from the config |
+| `feeds[].max_age_days` | integer (>= 1) | global value | Overrides `max_age_days` for this feed |
+| `feeds[].archive_retention_days` | integer (>= 0) | global value | Overrides `archive_retention_days` for this feed. `0` means never delete this feed's archived articles, even when the global value is set. Ignored when `clear_archive_on_sync` is `true` |
 | `feeds[].include` | list of strings | none | Only add articles whose title matches at least one pattern (case-insensitive regex; plain keywords work) |
 | `feeds[].exclude` | list of strings | none | Skip articles whose title matches any pattern; takes precedence over `include` |
+
+Per-feed overrides notes:
+
+- Feeds are identified by their exact `url`. If you edit a feed's URL, articles synced under the old URL fall back to the global values (and duplicate URLs are rejected).
+- `clear_archive_on_sync: true` ignores every per-feed `archive_retention_days`, including `0`.
+- Articles synced before upgrading have no recorded feed. Their feed is filled in when they still appear in the feed; until then they use the global values, except that their archived copies are never deleted while any feed sets `archive_retention_days: 0`.
 
 ### Example
 
@@ -188,6 +196,8 @@ feeds:
     label: "Example Blog"
   - url: "https://another-blog.com/rss"
     label: "Another Blog"
+    max_age_days: 14           # per-feed override
+    archive_retention_days: 0  # 0 = never delete this feed's archived articles
     enabled: false  # temporarily paused
 ```
 

@@ -18,6 +18,11 @@ type Feed struct {
 	Include []string `yaml:"include"`
 	Exclude []string `yaml:"exclude"`
 
+	// Optional per-feed overrides of the global values. Nil inherits.
+	// ArchiveRetentionDays 0 means never delete this feed's archived items.
+	MaxAgeDays           *int `yaml:"max_age_days"`
+	ArchiveRetentionDays *int `yaml:"archive_retention_days"`
+
 	include []*regexp.Regexp
 	exclude []*regexp.Regexp
 }
@@ -65,6 +70,23 @@ type Config struct {
 	Feeds                []Feed `yaml:"feeds"`
 }
 
+// MaxAgeFor returns the feed's max_age_days, falling back to the global value.
+func (c *Config) MaxAgeFor(f Feed) int {
+	if f.MaxAgeDays != nil {
+		return *f.MaxAgeDays
+	}
+	return c.MaxAgeDays
+}
+
+// RetentionFor returns the feed's archive_retention_days (0 = never delete),
+// falling back to the global value.
+func (c *Config) RetentionFor(f Feed) int {
+	if f.ArchiveRetentionDays != nil {
+		return *f.ArchiveRetentionDays
+	}
+	return c.ArchiveRetentionDays
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -81,6 +103,17 @@ func Load(path string) (*Config, error) {
 		f := &cfg.Feeds[i]
 		if f.URL == "" {
 			return nil, fmt.Errorf("feed %d missing url", i)
+		}
+		for _, prev := range cfg.Feeds[:i] {
+			if prev.URL == f.URL {
+				return nil, fmt.Errorf("feed %d duplicate url %s", i, f.URL)
+			}
+		}
+		if f.MaxAgeDays != nil && *f.MaxAgeDays < 1 {
+			return nil, fmt.Errorf("feed %d max_age_days must be >= 1", i)
+		}
+		if f.ArchiveRetentionDays != nil && *f.ArchiveRetentionDays < 0 {
+			return nil, fmt.Errorf("feed %d archive_retention_days must be >= 0", i)
 		}
 		var err error
 		if f.include, err = compilePatterns(f.Include); err != nil {

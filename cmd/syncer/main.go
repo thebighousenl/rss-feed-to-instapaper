@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/danielgroothuis/rss-feed-to-instapaper/internal/config"
 	"github.com/danielgroothuis/rss-feed-to-instapaper/internal/feed"
@@ -14,6 +15,7 @@ import (
 type pendingItem struct {
 	item      feed.Item
 	feedLabel string
+	feedURL   string
 }
 
 func sortPending(items []pendingItem) {
@@ -53,6 +55,84 @@ func selectNew(f config.Feed, items []feed.Item, isNew bool, maxInitial int, isS
 	}
 	if maxInitial > 0 && isNew && len(out) > maxInitial {
 		out = out[:maxInitial]
+	}
+	return out
+}
+
+func findFeed(cfg *config.Config, url *string) (config.Feed, bool) {
+	if url != nil {
+		for _, f := range cfg.Feeds {
+			if f.URL == *url {
+				return f, true
+			}
+		}
+	}
+	return config.Feed{}, false
+}
+
+// maxAgeFor: the feed's threshold, or the global one for unknown/removed feeds.
+func maxAgeFor(cfg *config.Config, item state.SentItem) int {
+	if f, ok := findFeed(cfg, item.FeedURL); ok {
+		return cfg.MaxAgeFor(f)
+	}
+	return cfg.MaxAgeDays
+}
+
+// retentionFor returns 0 for "never delete". Rows with no feed_url (legacy,
+// not yet backfilled) could belong to any feed, so they are kept while any
+// feed explicitly opts out of deletion.
+func retentionFor(cfg *config.Config, item state.SentItem) int {
+	if f, ok := findFeed(cfg, item.FeedURL); ok {
+		return cfg.RetentionFor(f)
+	}
+	if item.FeedURL == nil {
+		for _, f := range cfg.Feeds {
+			if f.ArchiveRetentionDays != nil && *f.ArchiveRetentionDays == 0 {
+				return 0
+			}
+		}
+	}
+	return cfg.ArchiveRetentionDays
+}
+
+// minMaxAge is the smallest threshold in play, used as the SQL pre-filter.
+func minMaxAge(cfg *config.Config) int {
+	m := cfg.MaxAgeDays
+	for _, f := range cfg.Feeds {
+		if d := cfg.MaxAgeFor(f); d < m {
+			m = d
+		}
+	}
+	return m
+}
+
+// minRetention is the smallest positive threshold in play (0 = nothing is ever deleted).
+func minRetention(cfg *config.Config) int {
+	m := cfg.ArchiveRetentionDays
+	for _, f := range cfg.Feeds {
+		if d := cfg.RetentionFor(f); d > 0 && (m == 0 || d < m) {
+			m = d
+		}
+	}
+	return m
+}
+
+func dueForArchive(cfg *config.Config, items []state.SentItem, now time.Time) []state.SentItem {
+	var out []state.SentItem
+	for _, it := range items {
+		if now.Sub(it.SentAt) >= time.Duration(maxAgeFor(cfg, it))*24*time.Hour {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func dueForDelete(cfg *config.Config, items []state.SentItem, now time.Time) []state.SentItem {
+	var out []state.SentItem
+	for _, it := range items {
+		if d := retentionFor(cfg, it); d > 0 && it.ArchivedAt != nil && now.Sub(*it.ArchivedAt) >= time.Duration(d)*24*time.Hour {
+			out = append(out, it)
+		}
 	}
 	return out
 }
@@ -97,9 +177,14 @@ func main() {
 		if err != nil {
 			log.Printf("ERROR register feed %s: %v", f.URL, err)
 		}
+		for _, item := range items {
+			if err := db.BackfillFeedURL(item.GUID, f.URL); err != nil {
+				log.Printf("ERROR backfill feed_url %s: %v", item.GUID, err)
+			}
+		}
 		feedNew := selectNew(f, items, isNew, cfg.MaxInitialItems, db.IsSent)
 		for _, item := range feedNew {
-			pending = append(pending, pendingItem{item: item, feedLabel: f.Label})
+			pending = append(pending, pendingItem{item: item, feedLabel: f.Label, feedURL: f.URL})
 		}
 		log.Printf("[%s] %d new articles", f.Label, len(pending)-before)
 	}
@@ -116,33 +201,32 @@ func main() {
 			log.Printf("ERROR add to instapaper %s: %v", p.item.URL, err)
 			continue
 		}
-		if err := db.MarkSentWithID(p.item.GUID, bookmarkID); err != nil {
+		if err := db.MarkSentWithID(p.item.GUID, bookmarkID, p.feedURL); err != nil {
 			log.Printf("ERROR mark sent %s: %v", p.item.GUID, err)
 		}
 		added++
 	}
 
 	var archived int
-	aged, err := db.OldItems(cfg.MaxAgeDays)
+	aged, err := db.OldItems(minMaxAge(cfg))
 	if err != nil {
 		log.Printf("ERROR query old items: %v", err)
-	} else {
-		for _, item := range aged {
-			if item.BookmarkID != nil {
-				log.Printf("archiving %q (bookmark %d)", item.GUID, *item.BookmarkID)
-				if err := client.Archive(*item.BookmarkID); err != nil {
-					log.Printf("ERROR archive bookmark %d (%s): %v", *item.BookmarkID, item.GUID, err)
-				}
-				if err := db.MarkArchived(item.GUID); err != nil {
-					log.Printf("ERROR mark archived %s: %v", item.GUID, err)
-				}
-			} else {
-				if err := db.DeleteItem(item.GUID); err != nil {
-					log.Printf("ERROR delete item %s: %v", item.GUID, err)
-				}
+	}
+	for _, item := range dueForArchive(cfg, aged, time.Now()) {
+		if item.BookmarkID != nil {
+			log.Printf("archiving %q (bookmark %d)", item.GUID, *item.BookmarkID)
+			if err := client.Archive(*item.BookmarkID); err != nil {
+				log.Printf("ERROR archive bookmark %d (%s): %v", *item.BookmarkID, item.GUID, err)
 			}
-			archived++
+			if err := db.MarkArchived(item.GUID); err != nil {
+				log.Printf("ERROR mark archived %s: %v", item.GUID, err)
+			}
+		} else {
+			if err := db.DeleteItem(item.GUID); err != nil {
+				log.Printf("ERROR delete item %s: %v", item.GUID, err)
+			}
 		}
+		archived++
 	}
 
 	var deleted int
@@ -169,23 +253,22 @@ func main() {
 				}
 			}
 		}
-	} else if cfg.ArchiveRetentionDays > 0 {
-		toDelete, toDeleteErr := db.ArchivedItems(cfg.ArchiveRetentionDays)
-		if toDeleteErr != nil {
-			log.Printf("ERROR query archived items: %v", toDeleteErr)
-		} else {
-			for _, item := range toDelete {
-				if item.BookmarkID != nil {
-					log.Printf("deleting %q (bookmark %d)", item.GUID, *item.BookmarkID)
-					if err := client.Delete(*item.BookmarkID); err != nil {
-						log.Printf("ERROR delete bookmark %d (%s): %v", *item.BookmarkID, item.GUID, err)
-					}
+	} else if minDays := minRetention(cfg); minDays > 0 {
+		old, err := db.ArchivedItems(minDays)
+		if err != nil {
+			log.Printf("ERROR query archived items: %v", err)
+		}
+		for _, item := range dueForDelete(cfg, old, time.Now()) {
+			if item.BookmarkID != nil {
+				log.Printf("deleting %q (bookmark %d)", item.GUID, *item.BookmarkID)
+				if err := client.Delete(*item.BookmarkID); err != nil {
+					log.Printf("ERROR delete bookmark %d (%s): %v", *item.BookmarkID, item.GUID, err)
 				}
-				if err := db.DeleteItem(item.GUID); err != nil {
-					log.Printf("ERROR delete item %s: %v", item.GUID, err)
-				}
-				deleted++
 			}
+			if err := db.DeleteItem(item.GUID); err != nil {
+				log.Printf("ERROR delete item %s: %v", item.GUID, err)
+			}
+			deleted++
 		}
 	}
 

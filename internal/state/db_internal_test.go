@@ -230,3 +230,54 @@ func TestDB_Open_migrates_existing_db(t *testing.T) {
 		t.Fatalf("got %d items, want 2", len(items))
 	}
 }
+
+func TestDB_items_carry_feed_url_and_backfill(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.conn.Exec(`INSERT INTO sent_items (guid, sent_at, archived_at) VALUES ('legacy', '2020-01-01 00:00:00', '2020-01-02 00:00:00')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkSentWithID("empty", 1, ""); err != nil { // "" stored as NULL
+		t.Fatal(err)
+	}
+	items, err := db.ArchivedItems(1)
+	if err != nil || len(items) != 1 || items[0].FeedURL != nil || items[0].ArchivedAt == nil {
+		t.Fatalf("legacy: %v %+v", err, items)
+	}
+	if err := db.BackfillFeedURL("legacy", "feedA"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.BackfillFeedURL("legacy", "feedB") // already set: no-op
+	items, _ = db.ArchivedItems(1)
+	if *items[0].FeedURL != "feedA" {
+		t.Errorf("feed_url: %q", *items[0].FeedURL)
+	}
+	var u *string
+	if err := db.conn.QueryRow(`SELECT feed_url FROM sent_items WHERE guid='empty'`).Scan(&u); err != nil || u != nil {
+		t.Errorf("empty feed_url should be NULL: %v %v", u, err)
+	}
+}
+
+func TestDB_feed_url_migration(t *testing.T) {
+	path := t.TempDir() + "/s.db"
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	db, err = Open(path) // reopen: ALTER must be idempotent
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+	if err := db.MarkSentWithID("g", 1, "feedA"); err != nil {
+		t.Fatal(err)
+	}
+	var u string
+	if err := db.conn.QueryRow(`SELECT feed_url FROM sent_items WHERE guid='g'`).Scan(&u); err != nil || u != "feedA" {
+		t.Errorf("feed_url: %q, %v", u, err)
+	}
+}
