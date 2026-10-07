@@ -8,6 +8,7 @@ import (
 
 	"github.com/danielgroothuis/rss-feed-to-instapaper/internal/config"
 	"github.com/danielgroothuis/rss-feed-to-instapaper/internal/feed"
+	"github.com/danielgroothuis/rss-feed-to-instapaper/internal/state"
 )
 
 func TestSortPending_order(t *testing.T) {
@@ -120,5 +121,48 @@ func TestSelectNew_maxInitialIgnoredForKnownFeed(t *testing.T) {
 	got := selectNew(f, titledItems("a", "b", "c"), false, 2, neverSent)
 	if len(got) != 3 {
 		t.Errorf("got %d items, want 3", len(got))
+	}
+}
+
+func TestDueForDelete_perFeed(t *testing.T) {
+	zero, ten := 0, 10
+	cfg := &config.Config{MaxAgeDays: 1, ArchiveRetentionDays: 30, Feeds: []config.Feed{
+		{URL: "keep", ArchiveRetentionDays: &zero},
+		{URL: "short", ArchiveRetentionDays: &ten},
+		{URL: "plain"},
+	}}
+	now := time.Now()
+	at := now.Add(-20 * 24 * time.Hour)
+	u := func(s string) *string { return &s }
+	items := []state.SentItem{
+		{GUID: "keep", FeedURL: u("keep"), ArchivedAt: &at},
+		{GUID: "short", FeedURL: u("short"), ArchivedAt: &at},
+		{GUID: "plain", FeedURL: u("plain"), ArchivedAt: &at},
+		{GUID: "removed", FeedURL: u("gone"), ArchivedAt: &at},
+		{GUID: "legacy", ArchivedAt: &at},
+	}
+	got := dueForDelete(cfg, items, now)
+	if len(got) != 1 || got[0].GUID != "short" {
+		t.Errorf("got %+v, want only short (20d old: 10d feed due, 30d global not, 0 never; legacy kept while a feed opts out)", got)
+	}
+	if minRetention(cfg) != 10 {
+		t.Errorf("minRetention: %d", minRetention(cfg))
+	}
+	cfg.Feeds[0].ArchiveRetentionDays = nil // no opt-out: legacy falls back to global
+	if retentionFor(cfg, items[4]) != 30 {
+		t.Error("legacy row should use global when no feed opts out")
+	}
+}
+
+func TestDueForArchive_perFeed(t *testing.T) {
+	three := 3
+	cfg := &config.Config{MaxAgeDays: 1, Feeds: []config.Feed{{URL: "slow", MaxAgeDays: &three}, {URL: "fast"}}}
+	now := time.Now()
+	sent := now.Add(-2 * 24 * time.Hour)
+	u := func(s string) *string { return &s }
+	items := []state.SentItem{{GUID: "slow", FeedURL: u("slow"), SentAt: sent}, {GUID: "fast", FeedURL: u("fast"), SentAt: sent}, {GUID: "legacy", SentAt: sent}}
+	got := dueForArchive(cfg, items, now)
+	if len(got) != 2 || got[0].GUID != "fast" || got[1].GUID != "legacy" {
+		t.Errorf("got %+v", got)
 	}
 }

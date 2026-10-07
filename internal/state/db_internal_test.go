@@ -20,7 +20,7 @@ func TestDB_OldItems_returns_aged_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItemsOutside(1, nil)
+	items, err := db.OldItems(1)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestDB_OldItems_nil_bookmark_id_for_pre_migration_rows(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItemsOutside(1, nil)
+	items, err := db.OldItems(1)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestDB_OldItems_skips_recent_items(t *testing.T) {
 		t.Fatalf("MarkSent: %v", err)
 	}
 
-	items, err := db.OldItemsOutside(1, nil) // 1 day threshold — just-inserted item is not old
+	items, err := db.OldItems(1) // 1 day threshold — just-inserted item is not old
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDB_OldItems_skips_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItemsOutside(1, nil)
+	items, err := db.OldItems(1)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestDB_ArchivedItems_returns_old_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.ArchivedItemsOutside(30, nil)
+	items, err := db.ArchivedItems(30)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestDB_ArchivedItems_skips_recently_archived(t *testing.T) {
 		t.Fatalf("MarkArchived: %v", err)
 	}
 
-	items, err := db.ArchivedItemsOutside(1, nil)
+	items, err := db.ArchivedItems(1)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDB_ArchivedItems_skips_non_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.ArchivedItemsOutside(1, nil)
+	items, err := db.ArchivedItems(1)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestDB_Open_migrates_existing_db(t *testing.T) {
 		t.Fatalf("insert after migration: %v", err)
 	}
 
-	items, err := db2.OldItemsOutside(1, nil)
+	items, err := db2.OldItems(1)
 	if err != nil {
 		t.Fatalf("OldItems after migration: %v", err)
 	}
@@ -231,43 +231,33 @@ func TestDB_Open_migrates_existing_db(t *testing.T) {
 	}
 }
 
-func TestDB_per_feed_selection(t *testing.T) {
+func TestDB_items_carry_feed_url_and_backfill(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
-	for _, r := range [][]any{{"a", "feedA"}, {"b", "feedB"}, {"gone", "removed"}, {"legacy", nil}} {
-		if _, err := db.conn.Exec(
-			`INSERT INTO sent_items (guid, feed_url, sent_at, archived_at) VALUES (?, ?, '2020-01-01 00:00:00', NULL)`, r...,
-		); err != nil {
-			t.Fatalf("insert: %v", err)
-		}
-	}
-	guids := func(items []SentItem, err error) string {
-		if err != nil {
-			t.Fatal(err)
-		}
-		s := ""
-		for _, i := range items {
-			s += i.GUID + ","
-		}
-		return s
-	}
-	if got := guids(db.OldItems(1, "feedA")); got != "a," {
-		t.Errorf("OldItems feedA: %q", got)
-	}
-	if got := guids(db.OldItemsOutside(1, []string{"feedA", "feedB"})); got != "gone,legacy," {
-		t.Errorf("OldItemsOutside: %q", got)
-	}
-	if _, err := db.conn.Exec(`UPDATE sent_items SET archived_at = '2020-01-01 00:00:00'`); err != nil {
 		t.Fatal(err)
 	}
-	if got := guids(db.ArchivedItems(1, "feedB")); got != "b," {
-		t.Errorf("ArchivedItems feedB: %q", got)
+	defer db.Close()
+	if _, err := db.conn.Exec(`INSERT INTO sent_items (guid, sent_at, archived_at) VALUES ('legacy', '2020-01-01 00:00:00', '2020-01-02 00:00:00')`); err != nil {
+		t.Fatal(err)
 	}
-	if got := guids(db.ArchivedItemsOutside(1, []string{"feedA", "feedB"})); got != "gone,legacy," {
-		t.Errorf("ArchivedItemsOutside: %q", got)
+	if err := db.MarkSentWithID("empty", 1, ""); err != nil { // "" stored as NULL
+		t.Fatal(err)
+	}
+	items, err := db.ArchivedItems(1)
+	if err != nil || len(items) != 1 || items[0].FeedURL != nil || items[0].ArchivedAt == nil {
+		t.Fatalf("legacy: %v %+v", err, items)
+	}
+	if err := db.BackfillFeedURL("legacy", "feedA"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.BackfillFeedURL("legacy", "feedB") // already set: no-op
+	items, _ = db.ArchivedItems(1)
+	if *items[0].FeedURL != "feedA" {
+		t.Errorf("feed_url: %q", *items[0].FeedURL)
+	}
+	var u *string
+	if err := db.conn.QueryRow(`SELECT feed_url FROM sent_items WHERE guid='empty'`).Scan(&u); err != nil || u != nil {
+		t.Errorf("empty feed_url should be NULL: %v %v", u, err)
 	}
 }
 

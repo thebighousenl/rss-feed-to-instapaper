@@ -177,6 +177,12 @@ All feed and sync behavior is configured in `config.yaml`.
 | `feeds[].include` | list of strings | none | Only add articles whose title matches at least one pattern (case-insensitive regex; plain keywords work) |
 | `feeds[].exclude` | list of strings | none | Skip articles whose title matches any pattern; takes precedence over `include` |
 
+Per-feed overrides notes:
+
+- Feeds are identified by their exact `url`. If you edit a feed's URL, articles synced under the old URL fall back to the global values (and duplicate URLs are rejected).
+- `clear_archive_on_sync: true` ignores every per-feed `archive_retention_days`, including `0`.
+- Articles synced before upgrading have no recorded feed. Their feed is filled in when they still appear in the feed; until then they use the global values, except that their archived copies are never deleted while any feed sets `archive_retention_days: 0`.
+
 ### Example
 
 ```yaml

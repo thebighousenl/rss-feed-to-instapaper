@@ -293,3 +293,11 @@ func TestLoad_per_feed_invalid(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_duplicate_feed_url(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	_ = os.WriteFile(path, []byte("feeds:\n  - url: a\n  - url: a\n    max_age_days: 2\n"), 0644)
+	if _, err := config.Load(path); err == nil {
+		t.Error("expected duplicate url error")
+	}
+}

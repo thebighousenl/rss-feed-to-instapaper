@@ -17,6 +17,16 @@ type SentItem struct {
 	GUID       string
 	BookmarkID *int64
 	SentAt     time.Time
+	ArchivedAt *time.Time
+	FeedURL    *string // nil for rows synced before per-feed tracking
+}
+
+func parseTime(s string) (time.Time, error) {
+	t, err := time.Parse("2006-01-02 15:04:05", s)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, s)
+	}
+	return t, err
 }
 
 func Open(path string) (*DB, error) {
@@ -94,7 +104,7 @@ func (db *DB) MarkSent(guid string) error {
 
 func (db *DB) MarkSentWithID(guid string, bookmarkID int64, feedURL string) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO sent_items (guid, bookmark_id, feed_url) VALUES (?, ?, ?)
+		`INSERT INTO sent_items (guid, bookmark_id, feed_url) VALUES (?, ?, NULLIF(?, ''))
      ON CONFLICT(guid) DO UPDATE SET bookmark_id = excluded.bookmark_id, feed_url = excluded.feed_url`,
 		guid, bookmarkID, feedURL,
 	)
@@ -115,48 +125,25 @@ func (db *DB) MarkArchived(guid string) error {
 	return nil
 }
 
-// OldItems returns unarchived items of one feed older than maxAgeDays.
-func (db *DB) OldItems(maxAgeDays int, feedURL string) ([]SentItem, error) {
-	return db.query(`archived_at IS NULL AND sent_at < datetime('now', ?) AND feed_url = ?`,
-		days(maxAgeDays), feedURL)
+// OldItems returns unarchived items older than maxAgeDays.
+func (db *DB) OldItems(maxAgeDays int) ([]SentItem, error) {
+	return db.query(`archived_at IS NULL AND sent_at < datetime('now', ?)`, fmt.Sprintf("-%d days", maxAgeDays))
 }
 
-// OldItemsOutside is OldItems for rows with a NULL feed_url or a feed not in feedURLs.
-func (db *DB) OldItemsOutside(maxAgeDays int, feedURLs []string) ([]SentItem, error) {
-	clause, args := outside(feedURLs)
-	return db.query(`archived_at IS NULL AND sent_at < datetime('now', ?) AND `+clause,
-		append([]any{days(maxAgeDays)}, args...)...)
+// ArchivedItems returns items archived more than retentionDays ago.
+func (db *DB) ArchivedItems(retentionDays int) ([]SentItem, error) {
+	return db.query(`archived_at < datetime('now', ?)`, fmt.Sprintf("-%d days", retentionDays))
 }
 
-// ArchivedItems returns items of one feed archived more than retentionDays ago.
-func (db *DB) ArchivedItems(retentionDays int, feedURL string) ([]SentItem, error) {
-	return db.query(`archived_at < datetime('now', ?) AND feed_url = ?`,
-		days(retentionDays), feedURL)
-}
-
-// ArchivedItemsOutside is ArchivedItems for rows with a NULL feed_url or a feed not in feedURLs.
-func (db *DB) ArchivedItemsOutside(retentionDays int, feedURLs []string) ([]SentItem, error) {
-	clause, args := outside(feedURLs)
-	return db.query(`archived_at < datetime('now', ?) AND `+clause,
-		append([]any{days(retentionDays)}, args...)...)
-}
-
-func days(n int) string { return fmt.Sprintf("-%d days", n) }
-
-func outside(feedURLs []string) (string, []any) {
-	if len(feedURLs) == 0 {
-		return "1", nil
-	}
-	args := make([]any, len(feedURLs))
-	for i, u := range feedURLs {
-		args[i] = u
-	}
-	return "(feed_url IS NULL OR feed_url NOT IN (?" + strings.Repeat(",?", len(feedURLs)-1) + "))", args
+// BackfillFeedURL records the feed for a legacy row that has none.
+func (db *DB) BackfillFeedURL(guid, feedURL string) error {
+	_, err := db.conn.Exec(`UPDATE sent_items SET feed_url = ? WHERE guid = ? AND feed_url IS NULL`, feedURL, guid)
+	return err
 }
 
 func (db *DB) query(where string, args ...any) ([]SentItem, error) {
 	rows, err := db.conn.Query(
-		`SELECT guid, bookmark_id, sent_at FROM sent_items WHERE deleted_at IS NULL AND `+where, args...)
+		`SELECT guid, bookmark_id, sent_at, archived_at, feed_url FROM sent_items WHERE deleted_at IS NULL AND `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
@@ -166,7 +153,7 @@ func (db *DB) query(where string, args ...any) ([]SentItem, error) {
 
 func (db *DB) AllArchivedItems() ([]SentItem, error) {
 	rows, err := db.conn.Query(
-		`SELECT guid, bookmark_id, sent_at FROM sent_items WHERE archived_at IS NOT NULL AND deleted_at IS NULL`,
+		`SELECT guid, bookmark_id, sent_at, archived_at, feed_url FROM sent_items WHERE archived_at IS NOT NULL AND deleted_at IS NULL`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query all archived items: %w", err)
@@ -180,17 +167,22 @@ func scanSentRows(rows *sql.Rows) ([]SentItem, error) {
 	for rows.Next() {
 		var item SentItem
 		var sentAt string
-		if err := rows.Scan(&item.GUID, &item.BookmarkID, &sentAt); err != nil {
+		var archivedAt sql.NullString
+		if err := rows.Scan(&item.GUID, &item.BookmarkID, &sentAt, &archivedAt, &item.FeedURL); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
-		t, err := time.Parse("2006-01-02 15:04:05", sentAt)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339, sentAt)
-		}
+		t, err := parseTime(sentAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse sent_at %q: %w", sentAt, err)
 		}
 		item.SentAt = t
+		if archivedAt.Valid {
+			at, err := parseTime(archivedAt.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse archived_at %q: %w", archivedAt.String, err)
+			}
+			item.ArchivedAt = &at
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()

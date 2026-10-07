@@ -104,6 +104,11 @@ func Load(path string) (*Config, error) {
 		if f.URL == "" {
 			return nil, fmt.Errorf("feed %d missing url", i)
 		}
+		for _, prev := range cfg.Feeds[:i] {
+			if prev.URL == f.URL {
+				return nil, fmt.Errorf("feed %d duplicate url %s", i, f.URL)
+			}
+		}
 		if f.MaxAgeDays != nil && *f.MaxAgeDays < 1 {
 			return nil, fmt.Errorf("feed %d max_age_days must be >= 1", i)
 		}
