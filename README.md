@@ -29,7 +29,7 @@ Built with Kobo e-reader users in mind: if you use Instapaper's native Kobo inte
 Clone this repository or download `docker-compose.yml`, `config.example.yaml`, and `.env.example`:
 
 ```bash
-git clone https://github.com/daniel-luke/rss-feed-to-instapaper.git
+git clone https://github.com/thebighousenl/rss-feed-to-instapaper.git
 cd rss-feed-to-instapaper
 ```
 
