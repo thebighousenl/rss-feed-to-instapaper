@@ -14,6 +14,7 @@ import (
 type pendingItem struct {
 	item      feed.Item
 	feedLabel string
+	feedURL   string
 }
 
 func sortPending(items []pendingItem) {
@@ -99,7 +100,7 @@ func main() {
 		}
 		feedNew := selectNew(f, items, isNew, cfg.MaxInitialItems, db.IsSent)
 		for _, item := range feedNew {
-			pending = append(pending, pendingItem{item: item, feedLabel: f.Label})
+			pending = append(pending, pendingItem{item: item, feedLabel: f.Label, feedURL: f.URL})
 		}
 		log.Printf("[%s] %d new articles", f.Label, len(pending)-before)
 	}
@@ -116,17 +117,25 @@ func main() {
 			log.Printf("ERROR add to instapaper %s: %v", p.item.URL, err)
 			continue
 		}
-		if err := db.MarkSentWithID(p.item.GUID, bookmarkID); err != nil {
+		if err := db.MarkSentWithID(p.item.GUID, bookmarkID, p.feedURL); err != nil {
 			log.Printf("ERROR mark sent %s: %v", p.item.GUID, err)
 		}
 		added++
 	}
 
+	// One pass per configured feed with its own thresholds, then one for rows
+	// from unknown/removed feeds (or NULL feed_url) with the global values.
+	urls := make([]string, len(cfg.Feeds))
+	for i, f := range cfg.Feeds {
+		urls[i] = f.URL
+	}
+
 	var archived int
-	aged, err := db.OldItems(cfg.MaxAgeDays)
-	if err != nil {
-		log.Printf("ERROR query old items: %v", err)
-	} else {
+	archiveAll := func(aged []state.SentItem, err error) {
+		if err != nil {
+			log.Printf("ERROR query old items: %v", err)
+			return
+		}
 		for _, item := range aged {
 			if item.BookmarkID != nil {
 				log.Printf("archiving %q (bookmark %d)", item.GUID, *item.BookmarkID)
@@ -144,6 +153,10 @@ func main() {
 			archived++
 		}
 	}
+	for _, f := range cfg.Feeds {
+		archiveAll(db.OldItems(cfg.MaxAgeFor(f), f.URL))
+	}
+	archiveAll(db.OldItemsOutside(cfg.MaxAgeDays, urls))
 
 	var deleted int
 	if cfg.ClearArchiveOnSync {
@@ -169,11 +182,12 @@ func main() {
 				}
 			}
 		}
-	} else if cfg.ArchiveRetentionDays > 0 {
-		toDelete, toDeleteErr := db.ArchivedItems(cfg.ArchiveRetentionDays)
-		if toDeleteErr != nil {
-			log.Printf("ERROR query archived items: %v", toDeleteErr)
-		} else {
+	} else {
+		deleteAll := func(toDelete []state.SentItem, err error) {
+			if err != nil {
+				log.Printf("ERROR query archived items: %v", err)
+				return
+			}
 			for _, item := range toDelete {
 				if item.BookmarkID != nil {
 					log.Printf("deleting %q (bookmark %d)", item.GUID, *item.BookmarkID)
@@ -186,6 +200,14 @@ func main() {
 				}
 				deleted++
 			}
+		}
+		for _, f := range cfg.Feeds {
+			if days := cfg.RetentionFor(f); days > 0 {
+				deleteAll(db.ArchivedItems(days, f.URL))
+			}
+		}
+		if cfg.ArchiveRetentionDays > 0 {
+			deleteAll(db.ArchivedItemsOutside(cfg.ArchiveRetentionDays, urls))
 		}
 	}
 

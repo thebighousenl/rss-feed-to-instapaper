@@ -20,7 +20,7 @@ func TestDB_OldItems_returns_aged_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItems(1)
+	items, err := db.OldItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestDB_OldItems_nil_bookmark_id_for_pre_migration_rows(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItems(1)
+	items, err := db.OldItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestDB_OldItems_skips_recent_items(t *testing.T) {
 		t.Fatalf("MarkSent: %v", err)
 	}
 
-	items, err := db.OldItems(1) // 1 day threshold — just-inserted item is not old
+	items, err := db.OldItemsOutside(1, nil) // 1 day threshold — just-inserted item is not old
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDB_OldItems_skips_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.OldItems(1)
+	items, err := db.OldItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("OldItems: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestDB_ArchivedItems_returns_old_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.ArchivedItems(30)
+	items, err := db.ArchivedItemsOutside(30, nil)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestDB_ArchivedItems_skips_recently_archived(t *testing.T) {
 		t.Fatalf("MarkArchived: %v", err)
 	}
 
-	items, err := db.ArchivedItems(1)
+	items, err := db.ArchivedItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDB_ArchivedItems_skips_non_archived_items(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	items, err := db.ArchivedItems(1)
+	items, err := db.ArchivedItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("ArchivedItems: %v", err)
 	}
@@ -221,12 +221,73 @@ func TestDB_Open_migrates_existing_db(t *testing.T) {
 		t.Fatalf("insert after migration: %v", err)
 	}
 
-	items, err := db2.OldItems(1)
+	items, err := db2.OldItemsOutside(1, nil)
 	if err != nil {
 		t.Fatalf("OldItems after migration: %v", err)
 	}
 	// Should return both: the pre-migration row (no bookmark_id) and the new one.
 	if len(items) != 2 {
 		t.Fatalf("got %d items, want 2", len(items))
+	}
+}
+
+func TestDB_per_feed_selection(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	for _, r := range [][]any{{"a", "feedA"}, {"b", "feedB"}, {"gone", "removed"}, {"legacy", nil}} {
+		if _, err := db.conn.Exec(
+			`INSERT INTO sent_items (guid, feed_url, sent_at, archived_at) VALUES (?, ?, '2020-01-01 00:00:00', NULL)`, r...,
+		); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	guids := func(items []SentItem, err error) string {
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := ""
+		for _, i := range items {
+			s += i.GUID + ","
+		}
+		return s
+	}
+	if got := guids(db.OldItems(1, "feedA")); got != "a," {
+		t.Errorf("OldItems feedA: %q", got)
+	}
+	if got := guids(db.OldItemsOutside(1, []string{"feedA", "feedB"})); got != "gone,legacy," {
+		t.Errorf("OldItemsOutside: %q", got)
+	}
+	if _, err := db.conn.Exec(`UPDATE sent_items SET archived_at = '2020-01-01 00:00:00'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := guids(db.ArchivedItems(1, "feedB")); got != "b," {
+		t.Errorf("ArchivedItems feedB: %q", got)
+	}
+	if got := guids(db.ArchivedItemsOutside(1, []string{"feedA", "feedB"})); got != "gone,legacy," {
+		t.Errorf("ArchivedItemsOutside: %q", got)
+	}
+}
+
+func TestDB_feed_url_migration(t *testing.T) {
+	path := t.TempDir() + "/s.db"
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	db, err = Open(path) // reopen: ALTER must be idempotent
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+	if err := db.MarkSentWithID("g", 1, "feedA"); err != nil {
+		t.Fatal(err)
+	}
+	var u string
+	if err := db.conn.QueryRow(`SELECT feed_url FROM sent_items WHERE guid='g'`).Scan(&u); err != nil || u != "feedA" {
+		t.Errorf("feed_url: %q, %v", u, err)
 	}
 }

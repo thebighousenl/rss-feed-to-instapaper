@@ -267,3 +267,29 @@ func TestFeedFilterInvalidRegex(t *testing.T) {
 		t.Fatal("expected error for invalid regex")
 	}
 }
+
+func TestLoad_per_feed_overrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	_ = os.WriteFile(path, []byte("max_age_days: 3\narchive_retention_days: 30\nfeeds:\n  - url: a\n    max_age_days: 14\n    archive_retention_days: 0\n  - url: b\n"), 0644)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	a, b := cfg.Feeds[0], cfg.Feeds[1]
+	if cfg.MaxAgeFor(a) != 14 || cfg.RetentionFor(a) != 0 {
+		t.Errorf("feed a: got %d/%d, want 14/0", cfg.MaxAgeFor(a), cfg.RetentionFor(a))
+	}
+	if cfg.MaxAgeFor(b) != 3 || cfg.RetentionFor(b) != 30 {
+		t.Errorf("feed b: got %d/%d, want 3/30", cfg.MaxAgeFor(b), cfg.RetentionFor(b))
+	}
+}
+
+func TestLoad_per_feed_invalid(t *testing.T) {
+	for _, field := range []string{"max_age_days: 0", "max_age_days: -1", "archive_retention_days: -1"} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		_ = os.WriteFile(path, []byte("feeds:\n  - url: a\n    "+field+"\n"), 0644)
+		if _, err := config.Load(path); err == nil {
+			t.Errorf("%s: expected error", field)
+		}
+	}
+}

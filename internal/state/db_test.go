@@ -72,7 +72,7 @@ func TestDB_MarkSentWithID_tracks_guid(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.MarkSentWithID("guid-with-id", 12345); err != nil {
+	if err := db.MarkSentWithID("guid-with-id", 12345, ""); err != nil {
 		t.Fatalf("MarkSentWithID: %v", err)
 	}
 
@@ -92,10 +92,10 @@ func TestDB_MarkSentWithID_idempotent(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.MarkSentWithID("g", 1); err != nil {
+	if err := db.MarkSentWithID("g", 1, ""); err != nil {
 		t.Fatalf("first MarkSentWithID: %v", err)
 	}
-	if err := db.MarkSentWithID("g", 1); err != nil {
+	if err := db.MarkSentWithID("g", 1, ""); err != nil {
 		t.Fatalf("second MarkSentWithID should be idempotent: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestDB_MarkArchived_sets_archived_at(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.MarkSentWithID("to-archive", 99); err != nil {
+	if err := db.MarkSentWithID("to-archive", 99, ""); err != nil {
 		t.Fatalf("MarkSentWithID: %v", err)
 	}
 	if err := db.MarkArchived("to-archive"); err != nil {
